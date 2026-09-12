@@ -88,6 +88,18 @@ npm run prisma:studio
 
 Once this completes, the Dashboard, Products, and Inventory pages in the web app will show real synced data.
 
+## Deploying to Render (M1)
+
+Only `apps/web` needs deploying right now — `apps/worker` has no persistent job until M2/M3 add cron schedules, so it's not a Render service yet.
+
+1. **Postgres**: create a Render Postgres instance (or keep using Neon/Supabase) and copy its connection string.
+2. **Web Service** (not Static Site — this app has API routes, middleware, and server components hitting Postgres at request time, none of which a static host can run):
+   - Root Directory: leave blank (repo root) — `npm install` must run at the workspace root so `@repo/core`/`@repo/db` link correctly.
+   - Build Command: `npm install && npm run prisma:generate && npm run prisma:migrate:deploy && npm run build --workspace=apps/web`
+   - Start Command: `npm run start --workspace=apps/web`
+   - Environment variables: `DATABASE_URL`, `ENCRYPTION_KEY`, `ADMIN_EMAIL`, `ADMIN_PASSWORD_HASH` (same values as your local `.env`), plus `APP_BASE_URL` set to the `https://<service>.onrender.com` URL Render assigns once the service exists.
+3. Run the historical import once from your own machine with `DATABASE_URL` pointed at the Render Postgres's *external* connection string — no need to run it on Render itself.
+
 ## Notes
 
 - The Shopify access token and API secret are only ever stored encrypted (AES-256-GCM) — never returned by any API response, never logged.
