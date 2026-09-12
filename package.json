@@ -1,0 +1,17 @@
+{
+  "name": "shopify-bi-platform",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace=apps/web",
+    "dev:worker": "npm run dev --workspace=apps/worker",
+    "build:web": "npm run build --workspace=apps/web",
+    "prisma:generate": "npm run generate --workspace=packages/db",
+    "prisma:migrate": "npm run migrate --workspace=packages/db",
+    "prisma:studio": "npm run studio --workspace=packages/db",
+    "import:historical": "npm run import --workspace=apps/worker"
+  }
+}

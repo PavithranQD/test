@@ -1,0 +1,364 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// One row = one store = one Shopify Custom App credential set.
+// No separate shopify_connections table — Phase 1 is single-store, custom-app auth, not OAuth.
+model Store {
+  id                    String    @id @default(cuid())
+  name                  String
+  shopDomain            String    @unique
+  accessTokenCiphertext String
+  apiKey                String
+  apiSecretCiphertext   String
+  scopes                String
+  currency              String    @default("USD")
+  timezone              String    @default("UTC")
+  isActive              Boolean   @default(true)
+  connectedAt           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  ruleThresholds      RuleThreshold[]
+  products            Product[]
+  customers           Customer[]
+  orders              Order[]
+  dailyMetrics        DailyMetric[]
+  productDailyMetrics ProductDailyMetric[]
+  alerts              Alert[]
+  reports             Report[]
+  syncJobs            SyncJob[]
+  webhookEvents       WebhookEvent[]
+  chatSessions        ChatSession[]
+}
+
+enum Role {
+  ADMIN
+  VIEWER
+}
+
+// Internal login users of this app (you / your team) — not Shopify merchants.
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String?
+  role         Role      @default(ADMIN)
+  createdAt    DateTime  @default(now())
+  lastLoginAt  DateTime?
+
+  sessions     Session[]
+  chatSessions ChatSession[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Per-store configurable thresholds for the deterministic rules/detection engine.
+model RuleThreshold {
+  id                 String   @id @default(cuid())
+  storeId            String
+  store              Store    @relation(fields: [storeId], references: [id])
+  ruleKey            String // REVENUE_DROP | STOCKOUT_RISK | FAST_MOVING_PRODUCT | REFUND_INCREASE | SLOW_MOVING_PRODUCT
+  thresholdValue     Float
+  comparisonOperator String // "lte" | "gte"
+  isEnabled          Boolean  @default(true)
+  updatedAt          DateTime @updatedAt
+
+  @@unique([storeId, ruleKey])
+}
+
+model Product {
+  id               String   @id @default(cuid())
+  storeId          String
+  store            Store    @relation(fields: [storeId], references: [id])
+  shopifyProductId BigInt
+  title            String
+  vendor           String?
+  productType      String?
+  status           String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  variants     ProductVariant[]
+  orderItems   OrderItem[]
+  dailyMetrics ProductDailyMetric[]
+
+  @@unique([storeId, shopifyProductId])
+  @@index([storeId])
+}
+
+model ProductVariant {
+  id               String  @id @default(cuid())
+  storeId          String
+  productId        String
+  product          Product @relation(fields: [productId], references: [id])
+  shopifyVariantId BigInt
+  sku              String?
+  title            String?
+  price            Decimal @db.Decimal(12, 2)
+  compareAtPrice   Decimal? @db.Decimal(12, 2)
+  inventoryItemId  BigInt?
+
+  inventoryLevels InventoryLevel[]
+  orderItems      OrderItem[]
+
+  @@unique([storeId, shopifyVariantId])
+  @@index([productId])
+}
+
+model InventoryLevel {
+  id                     String   @id @default(cuid())
+  storeId                String
+  variantId              String
+  variant                ProductVariant @relation(fields: [variantId], references: [id])
+  shopifyInventoryItemId BigInt
+  shopifyLocationId      BigInt
+  available              Int
+  updatedAt              DateTime @updatedAt
+
+  @@unique([storeId, shopifyInventoryItemId, shopifyLocationId])
+  @@index([variantId])
+}
+
+model Customer {
+  id                String    @id @default(cuid())
+  storeId           String
+  store             Store     @relation(fields: [storeId], references: [id])
+  shopifyCustomerId BigInt
+  email             String?
+  firstName         String?
+  lastName          String?
+  ordersCount       Int       @default(0)
+  totalSpent        Decimal   @default(0) @db.Decimal(12, 2)
+  firstOrderAt      DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  orders Order[]
+
+  @@unique([storeId, shopifyCustomerId])
+  @@index([storeId])
+}
+
+model Order {
+  id                String    @id @default(cuid())
+  storeId           String
+  store             Store     @relation(fields: [storeId], references: [id])
+  shopifyOrderId    BigInt
+  orderNumber       Int
+  customerId        String?
+  customer          Customer? @relation(fields: [customerId], references: [id])
+  currency          String
+  subtotalPrice     Decimal   @db.Decimal(12, 2)
+  totalDiscounts    Decimal   @db.Decimal(12, 2)
+  totalTax          Decimal   @db.Decimal(12, 2)
+  totalPrice        Decimal   @db.Decimal(12, 2)
+  totalRefunded     Decimal   @default(0) @db.Decimal(12, 2)
+  financialStatus   String?
+  fulfillmentStatus String?
+  cancelledAt       DateTime?
+  processedAt       DateTime
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  items           OrderItem[]
+  refunds         Refund[]
+  discountUsages  DiscountUsage[]
+
+  @@unique([storeId, shopifyOrderId])
+  @@index([storeId, processedAt])
+  @@index([customerId])
+}
+
+model OrderItem {
+  id            String         @id @default(cuid())
+  storeId       String
+  orderId       String
+  order         Order          @relation(fields: [orderId], references: [id])
+  productId     String?
+  product       Product?       @relation(fields: [productId], references: [id])
+  variantId     String?
+  variant       ProductVariant? @relation(fields: [variantId], references: [id])
+  title         String
+  quantity      Int
+  price         Decimal        @db.Decimal(12, 2)
+  totalDiscount Decimal        @default(0) @db.Decimal(12, 2)
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([storeId])
+}
+
+model Refund {
+  id              String   @id @default(cuid())
+  storeId         String
+  orderId         String
+  order           Order    @relation(fields: [orderId], references: [id])
+  shopifyRefundId BigInt
+  amount          Decimal  @db.Decimal(12, 2)
+  reason          String?
+  createdAt       DateTime
+
+  @@unique([storeId, shopifyRefundId])
+  @@index([orderId])
+}
+
+model DiscountUsage {
+  id             String  @id @default(cuid())
+  storeId        String
+  orderId        String
+  order          Order   @relation(fields: [orderId], references: [id])
+  code           String?
+  type           String? // percentage | fixed_amount | shipping
+  amountDeducted Decimal @db.Decimal(12, 2)
+
+  @@index([orderId])
+}
+
+// Metrics Engine output — everything the frontend and AI layer read from.
+model DailyMetric {
+  id                  String   @id @default(cuid())
+  storeId             String
+  store               Store    @relation(fields: [storeId], references: [id])
+  date                DateTime @db.Date
+  grossRevenue        Decimal  @db.Decimal(14, 2)
+  netRevenue          Decimal  @db.Decimal(14, 2)
+  totalDiscounts      Decimal  @db.Decimal(14, 2)
+  totalRefunds        Decimal  @db.Decimal(14, 2)
+  orderCount          Int
+  cancelledOrderCount Int
+  refundedOrderCount  Int
+  aov                 Decimal  @db.Decimal(12, 2)
+  newCustomers        Int
+  returningCustomers  Int
+  repeatPurchaseRate  Decimal  @db.Decimal(5, 2)
+  unitsSold           Int
+  computedAt          DateTime @default(now())
+
+  @@unique([storeId, date])
+  @@index([storeId, date])
+}
+
+model ProductDailyMetric {
+  id             String   @id @default(cuid())
+  storeId        String
+  store          Store    @relation(fields: [storeId], references: [id])
+  productId      String
+  product        Product  @relation(fields: [productId], references: [id])
+  date           DateTime @db.Date
+  unitsSold      Int
+  revenue        Decimal  @db.Decimal(14, 2)
+  growthPct      Decimal? @db.Decimal(6, 2)
+  velocity       Decimal? @db.Decimal(10, 4)
+  daysOfCoverage Decimal? @db.Decimal(10, 2)
+
+  @@unique([storeId, productId, date])
+  @@index([storeId, date])
+}
+
+// Rules/Detection Engine output.
+model Alert {
+  id             String    @id @default(cuid())
+  storeId        String
+  store          Store     @relation(fields: [storeId], references: [id])
+  ruleKey        String
+  severity       String // LOW | MEDIUM | HIGH
+  entityType     String? // PRODUCT | STORE
+  entityId       String?
+  message        String
+  metricSnapshot Json
+  status         String    @default("OPEN") // OPEN | ACKNOWLEDGED | RESOLVED
+  triggeredAt    DateTime  @default(now())
+  resolvedAt     DateTime?
+
+  @@index([storeId, status])
+  @@index([storeId, ruleKey, entityId])
+}
+
+// AI-generated periodic reports.
+model Report {
+  id          String   @id @default(cuid())
+  storeId     String
+  store       Store    @relation(fields: [storeId], references: [id])
+  type        String // WEEKLY | DAILY | MONTHLY
+  periodStart DateTime
+  periodEnd   DateTime
+  status      String   @default("GENERATING") // GENERATING | READY | FAILED
+  aiContent   Json? // { summary, importantChanges[], problems[], opportunities[], recommendedActions[], priority }
+  createdAt   DateTime @default(now())
+
+  @@index([storeId, type, createdAt])
+}
+
+model ChatSession {
+  id            String   @id @default(cuid())
+  storeId       String
+  store         Store    @relation(fields: [storeId], references: [id])
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  title         String?
+  createdAt     DateTime @default(now())
+  lastMessageAt DateTime @default(now())
+
+  messages ChatMessage[]
+
+  @@index([storeId, userId])
+}
+
+model ChatMessage {
+  id          String      @id @default(cuid())
+  sessionId   String
+  session     ChatSession @relation(fields: [sessionId], references: [id])
+  role        String // USER | ASSISTANT
+  content     String
+  contextUsed Json? // debug/audit only — exactly what was sent to Claude, never shown to end user
+  createdAt   DateTime    @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
+// Tracks historical import / reconciliation runs.
+model SyncJob {
+  id               String    @id @default(cuid())
+  storeId          String
+  store            Store     @relation(fields: [storeId], references: [id])
+  jobType          String // HISTORICAL_IMPORT | RECONCILIATION | WEBHOOK
+  entity           String // orders | products | customers | inventory
+  status           String // PENDING | RUNNING | SUCCESS | FAILED
+  cursor           String?
+  recordsProcessed Int       @default(0)
+  errorMessage     String?
+  startedAt        DateTime?
+  finishedAt       DateTime?
+
+  @@index([storeId, jobType, status])
+}
+
+// Idempotency guard — Shopify retries webhook delivery on failure/timeout.
+model WebhookEvent {
+  id               String    @id @default(cuid())
+  storeId          String
+  store            Store     @relation(fields: [storeId], references: [id])
+  topic            String
+  shopifyWebhookId String?
+  payloadHash      String
+  receivedAt       DateTime  @default(now())
+  processedAt      DateTime?
+  status           String    @default("RECEIVED")
+
+  @@unique([storeId, payloadHash])
+}
