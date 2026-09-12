@@ -1,4 +1,11 @@
-import "dotenv/config";
+import path from "node:path";
+import dotenv from "dotenv";
+// `npm run import --workspace=apps/worker` runs with apps/worker as the
+// working directory, not the repo root — dotenv's default "load .env from
+// cwd" behavior would silently find nothing there. Load it from the repo
+// root explicitly instead, regardless of where this script is invoked from.
+dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
+
 import { prisma } from "@repo/db";
 import { getActiveStore, runHistoricalImport, logger } from "@repo/core";
 

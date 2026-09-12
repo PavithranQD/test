@@ -1,4 +1,9 @@
-import "dotenv/config";
+import path from "node:path";
+import dotenv from "dotenv";
+// See runHistoricalImport.ts for why this loads explicitly from the repo
+// root instead of relying on dotenv's cwd-relative default.
+dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
+
 import { logger } from "@repo/core";
 
 // Placeholder entry point for the always-on worker process.
