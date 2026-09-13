@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@repo/db";
-import { getActiveStore, decryptSecret, verifyShopifyWebhookHmac, WEBHOOK_HANDLERS, computeDailyMetrics, logger } from "@repo/core";
+import { getActiveStore, decryptSecret, verifyShopifyWebhookHmac, WEBHOOK_HANDLERS, computeDailyMetrics, evaluateRules, logger } from "@repo/core";
 
 // Must run on the Node.js runtime (not Edge) -- needs node:crypto for HMAC
 // verification and Prisma for the DB writes triggered by handlers.
@@ -60,9 +60,11 @@ export async function POST(request: NextRequest) {
     // nightly job -- cheap (single day, single store), so awaiting it here
     // is simpler to reason about than a detached background task.
     try {
-      await computeDailyMetrics(store.id, new Date());
+      const today = new Date();
+      await computeDailyMetrics(store.id, today);
+      await evaluateRules(store.id, today);
     } catch (metricsErr) {
-      logger.error(metricsErr, "Incremental metrics recompute failed");
+      logger.error(metricsErr, "Incremental metrics/alert recompute failed");
     }
 
     return NextResponse.json({ ok: true });

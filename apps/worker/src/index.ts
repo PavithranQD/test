@@ -22,6 +22,7 @@ cron.schedule("15 0 * * *", runDailyMetrics);
 logger.info("Worker process started -- reconciliation every 6h, daily metrics at 00:15 UTC");
 
 // Also run once immediately on startup, so a deploy doesn't wait for the
-// next scheduled tick before the first pass.
+// next scheduled tick before the first pass. runDailyMetrics chains alert
+// detection internally.
 runSyncReconciliation();
 runDailyMetrics();

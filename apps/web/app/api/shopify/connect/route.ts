@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { connectStore, registerWebhooks, ShopifyAdminClient, ShopifyApiError, logger } from "@repo/core";
+import { connectStore, registerWebhooks, seedDefaultRuleThresholds, ShopifyAdminClient, ShopifyApiError, logger } from "@repo/core";
 import { requireUser } from "../../../../lib/session";
 
 export async function POST(request: NextRequest) {
@@ -18,6 +18,8 @@ export async function POST(request: NextRequest) {
       apiSecret,
       scopes: "read_products,read_orders,read_customers,read_inventory,read_discounts",
     });
+
+    await seedDefaultRuleThresholds(store.id);
 
     const appBaseUrl = process.env.APP_BASE_URL;
     if (appBaseUrl) {

@@ -13,4 +13,6 @@ export * from "./shopify/webhooks/handlers";
 export * from "./shopify/sync/reconcile";
 export * from "./metrics/engine";
 export * from "./metrics/comparisons";
+export * from "./rules/definitions";
+export * from "./rules/engine";
 export * from "./logger";
