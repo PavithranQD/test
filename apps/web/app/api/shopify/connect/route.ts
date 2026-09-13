@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { connectStore, ShopifyApiError } from "@repo/core";
+import { connectStore, registerWebhooks, ShopifyAdminClient, ShopifyApiError, logger } from "@repo/core";
 import { requireUser } from "../../../../lib/session";
 
 export async function POST(request: NextRequest) {
@@ -18,6 +18,15 @@ export async function POST(request: NextRequest) {
       apiSecret,
       scopes: "read_products,read_orders,read_customers,read_inventory,read_discounts",
     });
+
+    const appBaseUrl = process.env.APP_BASE_URL;
+    if (appBaseUrl) {
+      const client = new ShopifyAdminClient({ shopDomain: store.shopDomain, accessToken });
+      await registerWebhooks(client, appBaseUrl);
+    } else {
+      logger.warn("APP_BASE_URL not set -- skipped webhook registration. Continuous sync will rely on reconciliation only.");
+    }
+
     return NextResponse.json({ ok: true, shopDomain: store.shopDomain, name: store.name });
   } catch (err) {
     if (err instanceof ShopifyApiError) {

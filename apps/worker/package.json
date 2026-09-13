@@ -11,9 +11,11 @@
   "dependencies": {
     "@repo/core": "*",
     "@repo/db": "*",
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "node-cron": "^3.0.3"
   },
   "devDependencies": {
+    "@types/node-cron": "^3.0.11",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

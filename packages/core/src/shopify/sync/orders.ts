@@ -2,7 +2,7 @@ import { prisma } from "@repo/db";
 import { ShopifyAdminClient } from "../adminClient";
 import { upsertCustomer } from "./customers";
 
-interface ShopifyLineItem {
+export interface ShopifyLineItem {
   id: number;
   title: string;
   quantity: number;
@@ -12,26 +12,29 @@ interface ShopifyLineItem {
   variant_id: number | null;
 }
 
-interface ShopifyRefundTransaction {
+export interface ShopifyRefundTransaction {
   kind: string;
   status: string;
   amount: string;
 }
 
-interface ShopifyRefund {
+export interface ShopifyRefund {
   id: number;
+  order_id?: number;
   created_at: string;
   note: string | null;
   transactions: ShopifyRefundTransaction[];
 }
 
-interface ShopifyDiscountCode {
+export interface ShopifyDiscountCode {
   code: string;
   amount: string;
   type: string;
 }
 
-interface ShopifyCustomer {
+// Not the same export as customers.ts's ShopifyCustomer -- kept local since
+// it's only used for the embedded customer object inside an order payload.
+interface ShopifyOrderCustomer {
   id: number;
   email: string | null;
   first_name: string | null;
@@ -41,10 +44,10 @@ interface ShopifyCustomer {
   created_at: string;
 }
 
-interface ShopifyOrder {
+export interface ShopifyOrder {
   id: number;
   order_number: number;
-  customer: ShopifyCustomer | null;
+  customer: ShopifyOrderCustomer | null;
   currency: string;
   subtotal_price: string;
   total_discounts: string;
@@ -60,21 +63,13 @@ interface ShopifyOrder {
   discount_codes: ShopifyDiscountCode[];
 }
 
-function refundAmount(refund: ShopifyRefund): number {
+export function refundAmount(refund: ShopifyRefund): number {
   return refund.transactions
     .filter((t) => t.kind === "refund" && t.status === "success")
     .reduce((sum, t) => sum + Number(t.amount), 0);
 }
 
-// Syncs orders created on/after `sinceIso`, including line items, refunds,
-// and discount usage. `status=any` is required to pick up cancelled orders,
-// which Shopify excludes from the default order listing.
-export async function syncOrders(storeId: string, client: ShopifyAdminClient, sinceIso: string): Promise<number> {
-  const params = new URLSearchParams({
-    status: "any",
-    limit: "250",
-    created_at_min: sinceIso,
-  });
+async function fetchAndUpsertOrders(storeId: string, client: ShopifyAdminClient, params: URLSearchParams): Promise<number> {
   let url: string | null = client.restUrl(`/orders.json?${params.toString()}`);
   let processed = 0;
 
@@ -93,7 +88,23 @@ export async function syncOrders(storeId: string, client: ShopifyAdminClient, si
   return processed;
 }
 
-async function upsertOrder(storeId: string, o: ShopifyOrder): Promise<void> {
+// Syncs orders created on/after `sinceIso`. Used for the one-time
+// historical backfill. `status=any` is required to pick up cancelled
+// orders, which Shopify excludes from the default order listing.
+export async function syncOrders(storeId: string, client: ShopifyAdminClient, sinceIso: string): Promise<number> {
+  return fetchAndUpsertOrders(storeId, client, new URLSearchParams({ status: "any", limit: "250", created_at_min: sinceIso }));
+}
+
+// Syncs orders *updated* on/after `sinceIso` -- used by reconciliation to
+// catch edits to older orders (a refund on a week-old order, a status
+// change) that created_at_min-based filtering would miss.
+export async function syncRecentlyUpdatedOrders(storeId: string, client: ShopifyAdminClient, sinceIso: string): Promise<number> {
+  return fetchAndUpsertOrders(storeId, client, new URLSearchParams({ status: "any", limit: "250", updated_at_min: sinceIso }));
+}
+
+// Exported for reuse by the orders/create|updated|paid|cancelled webhook
+// handlers, which receive the same full order JSON shape as the REST API.
+export async function upsertOrder(storeId: string, o: ShopifyOrder): Promise<void> {
   let customerId: string | null = null;
   if (o.customer) {
     const customer = await upsertCustomer(storeId, o.customer);
@@ -166,6 +177,41 @@ async function syncLineItems(storeId: string, orderId: string, items: ShopifyLin
       },
     });
   }
+}
+
+// Handles the refunds/create webhook, whose payload is a standalone refund
+// object (order_id field, not nested inside an order) rather than the full
+// order shape upsertOrder expects. If the parent order hasn't been synced
+// yet (e.g. webhook arrived out of order), this is a no-op — the periodic
+// reconciliation job will pick it up on the next pass.
+export async function applyRefundWebhook(storeId: string, refund: ShopifyRefund): Promise<void> {
+  if (!refund.order_id) return;
+
+  const order = await prisma.order.findFirst({
+    where: { storeId, shopifyOrderId: BigInt(refund.order_id) },
+    select: { id: true },
+  });
+  if (!order) return;
+
+  const amount = refundAmount(refund);
+  if (amount > 0) {
+    await prisma.refund.upsert({
+      where: { storeId_shopifyRefundId: { storeId, shopifyRefundId: BigInt(refund.id) } },
+      update: { amount, reason: refund.note },
+      create: {
+        storeId,
+        orderId: order.id,
+        shopifyRefundId: BigInt(refund.id),
+        amount,
+        reason: refund.note,
+        createdAt: new Date(refund.created_at),
+      },
+    });
+  }
+
+  const allRefunds = await prisma.refund.findMany({ where: { orderId: order.id }, select: { amount: true } });
+  const totalRefunded = allRefunds.reduce((sum, r) => sum + Number(r.amount), 0);
+  await prisma.order.update({ where: { id: order.id }, data: { totalRefunded } });
 }
 
 async function syncRefunds(storeId: string, orderId: string, refunds: ShopifyRefund[]): Promise<void> {

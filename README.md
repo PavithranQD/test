@@ -9,7 +9,7 @@ See `PLAN.md` for the full architecture/build-milestone plan.
 ## Milestone status
 
 - [x] **M1 — Scaffold + credentials + manual import**
-- [ ] M2 — Webhooks + reconciliation
+- [x] **M2 — Webhooks + reconciliation**
 - [ ] M3 — Metrics Engine
 - [ ] M4 — Rules Engine + Alerts
 - [ ] M5 — Dashboard + core UI
@@ -88,9 +88,7 @@ npm run prisma:studio
 
 Once this completes, the Dashboard, Products, and Inventory pages in the web app will show real synced data.
 
-## Deploying to Render (M1)
-
-Only `apps/web` needs deploying right now — `apps/worker` has no persistent job until M2/M3 add cron schedules, so it's not a Render service yet.
+## Deploying to Render
 
 1. **Postgres**: create a Render Postgres instance (or keep using Neon/Supabase) and copy its connection string.
 2. **Web Service** (not Static Site — this app has API routes, middleware, and server components hitting Postgres at request time, none of which a static host can run):
@@ -99,6 +97,13 @@ Only `apps/web` needs deploying right now — `apps/worker` has no persistent jo
    - Start Command: `npm run start --workspace=apps/web`
    - Environment variables: `DATABASE_URL`, `ENCRYPTION_KEY`, `ADMIN_EMAIL`, `ADMIN_PASSWORD_HASH` (same values as your local `.env`), plus `APP_BASE_URL` set to the `https://<service>.onrender.com` URL Render assigns once the service exists.
 3. Run the historical import once from your own machine with `DATABASE_URL` pointed at the Render Postgres's *external* connection string — no need to run it on Render itself.
+4. **Background Worker** (as of M2, `apps/worker` has a real persistent job — sync reconciliation runs every 6 hours — so it's worth deploying now):
+   - Create a Render **Background Worker** (not Web Service — it doesn't listen on a port).
+   - Root Directory: leave blank (repo root), same reasoning as the web service.
+   - Build Command: `npm install && npm run prisma:generate`
+   - Start Command: `npm run dev:worker` (or build+run compiled JS if you prefer — `npm run build --workspace=apps/worker && node apps/worker/dist/index.js`)
+   - Environment variables: `DATABASE_URL`, `ENCRYPTION_KEY` (same values as the Web Service — `ANTHROPIC_API_KEY`/`APP_BASE_URL` not needed by the worker yet).
+5. After connecting the store (or reconnecting), webhooks are registered automatically against `APP_BASE_URL` — check Shopify Admin → Settings → Notifications → Webhooks to confirm they show up, or watch the Web Service logs when a test order is created/updated in the store.
 
 ## Notes
 

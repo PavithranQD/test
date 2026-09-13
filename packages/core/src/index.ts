@@ -7,4 +7,8 @@ export * from "./shopify/sync/products";
 export * from "./shopify/sync/customers";
 export * from "./shopify/sync/orders";
 export * from "./shopify/sync/historicalImport";
+export * from "./shopify/webhooks/verifyHmac";
+export * from "./shopify/webhooks/register";
+export * from "./shopify/webhooks/handlers";
+export * from "./shopify/sync/reconcile";
 export * from "./logger";

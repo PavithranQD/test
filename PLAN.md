@@ -37,9 +37,8 @@ shopify-bi-platform/
         shopify/
           adminClient.ts           fetch wrapper for Admin REST + GraphQL, injects token
           sync/
-            products.ts orders.ts customers.ts historicalImport.ts
-            reconcile.ts           (M2)
-          webhooks/                (M2)
+            products.ts orders.ts customers.ts historicalImport.ts reconcile.ts
+          webhooks/
             verifyHmac.ts register.ts handlers.ts
         metrics/                   (M3)
           revenue.ts orders.ts customers.ts products.ts inventory.ts discounts.ts
@@ -64,14 +63,16 @@ shopify-bi-platform/
         api/
           auth/login/route.ts  auth/logout/route.ts
           shopify/connect/route.ts  shopify/status/route.ts
-          shopify/webhooks/[topic]/route.ts   (M2, Node runtime, raw body for HMAC)
+          shopify/webhooks/[topic]/route.ts   Node runtime, raw body for HMAC
           metrics/*, insights, alerts, reports, chat/*                        (M3-M7)
-    worker/                        plain Node process (deployed separately, e.g. Railway)
+    worker/                        plain Node process (deployed separately, e.g. Render Background Worker)
       src/
-        index.ts                   placeholder; node-cron schedules registered here starting M2/M3
-        runHistoricalImport.ts     CLI entry, working now (M1)
+        index.ts                   node-cron: syncReconciliation every 6h (+ once on startup)
+        runHistoricalImport.ts     CLI entry, working (M1)
         hashPassword.ts            CLI helper to generate ADMIN_PASSWORD_HASH
-        jobs/                      (M2-M4) syncReconciliation.ts dailyMetrics.ts weeklyReport.ts alertDetection.ts
+        jobs/
+          syncReconciliation.ts    done (M2)
+          dailyMetrics.ts weeklyReport.ts alertDetection.ts   (M3-M4, not built yet)
 ```
 
 Both `apps/web` and `apps/worker` depend on `@repo/db` and `@repo/core`. Web API routes will read pre-computed tables (`DailyMetric`, `Alert`, `Report`) rather than recomputing on request once those exist — all heavy computation happens in the worker's cron jobs or incrementally in webhook handlers. This keeps Vercel function execution short and avoids serverless timeout issues.
@@ -88,7 +89,7 @@ Implemented. Core tables, adapted from the spec for single-store/custom-app real
 - **`Report`** — AI-generated periodic reports (M6), currently empty.
 - **`ChatSession` / `ChatMessage`** — chat history (M7), currently empty.
 - **`SyncJob`** — tracks historical import / reconciliation runs (in use since M1).
-- **`WebhookEvent`** — idempotency guard for webhooks (M2), currently unused.
+- **`WebhookEvent`** — idempotency guard for webhooks, in use since M2.
 
 ## Custom app credential flow — implemented (M1)
 
@@ -110,8 +111,8 @@ Flow: `Shopify → sync/webhooks → raw tables → Metrics Engine → Rules Eng
 
 ## Build milestones
 
-1. **M1 — Scaffold + credentials + manual import — DONE.** Monorepo, schema + migration, `/settings` connect flow with token encryption/validation, `runHistoricalImport.ts` CLI (REST pagination, see deviation note above), login/session auth, Dashboard/Products/Inventory pages reading real synced data. Verified: Prisma client generates cleanly, all packages type-check, `next build` compiles and produces all routes.
-2. **M2 — Webhooks + reconciliation**: webhook registration on connect, receiver + handlers, HMAC verification, `WebhookEvent` idempotency, worker `syncReconciliation.ts`. *Demo*: create a test order in Shopify Admin, see it land in Postgres within seconds; simulate a missed webhook and confirm reconciliation catches it.
+1. **M1 — Scaffold + credentials + manual import — DONE.** Monorepo, schema + migration, `/settings` connect flow with token encryption/validation, `runHistoricalImport.ts` CLI (REST pagination, see deviation note above), login/session auth, Dashboard/Products/Inventory pages reading real synced data. Verified against the live Render deployment: store connected, 89 products / 10,874 customers / 35 orders synced successfully.
+2. **M2 — Webhooks + reconciliation — DONE.** `registerWebhooks()` called automatically at the end of `/api/shopify/connect` for `orders/create|updated|cancelled|paid`, `refunds/create`, `products/create|update`, `inventory_levels/update`, `customers/create|update`, `app/uninstalled`. Receiver at `apps/web/app/api/shopify/webhooks/[topic]/route.ts` (Node runtime, raw-body HMAC verification via `verifyShopifyWebhookHmac`, dispatch by the `X-Shopify-Topic` header rather than the URL segment, `WebhookEvent` payload-hash dedupe for Shopify's at-least-once retries). Handlers reuse the same `upsertOrder`/`upsertProduct`/`upsertCustomer`/`upsertInventoryLevel` functions the bulk sync uses, refactored out of `products.ts`/`orders.ts` for that purpose. `reconcile.ts` re-pulls anything updated in the last 24h via `updated_at_min` (catches edits to older orders/products that webhooks might have missed, not just new records) and runs every 6 hours via `node-cron` in `apps/worker`, plus once immediately on worker startup. *Demo*: create/edit a test order in Shopify Admin, confirm it lands in Postgres within seconds via the webhook; check `SyncJob` rows with `jobType: RECONCILIATION` to confirm the periodic backstop is running.
 3. **M3 — Metrics Engine**: all metrics submodules, `dailyMetrics.ts` with backfill mode, `GET /api/metrics/revenue|orders`. *Demo*: numbers match Shopify Admin's own analytics for a known date.
 4. **M4 — Rules Engine + Alerts**: seeded `RuleThreshold` defaults, rules engine, `alertDetection.ts` chained after metrics, `GET /api/alerts`. *Demo*: feed a synthetic revenue drop, see the correct `Alert` appear.
 5. **M5 — Dashboard + core UI**: fill in reports(empty)/insights with real data, no AI yet. *Demo*: fully navigable app on live store data.
@@ -124,4 +125,4 @@ Flow: `Shopify → sync/webhooks → raw tables → Metrics Engine → Rules Eng
 - **Local dev**: `npm run dev:web` + `npm run dev:worker`; `npm run prisma:studio` to inspect synced/computed rows after each milestone.
 - **Correctness checks**: cross-check `DailyMetric` output against Shopify Admin's built-in analytics for the same date range (M3); manually create/cancel/refund a test order in Shopify Admin and confirm the webhook → DB → metrics → alerts chain reacts correctly (M2–M4).
 - **AI checks**: manually trigger `weeklyReport.ts` and `chatService` and confirm responses are grounded only in that store's real numbers (M6–M7) — no hallucinated figures, no PII leakage into `contextUsed`.
-- **Security checks**: confirm the Shopify token is never returned by any API response (`GET /shopify/status` returns only metadata) — verified; confirm webhook HMAC rejection on a tampered payload (M2); confirm session cookie is httpOnly/secure — implemented.
+- **Security checks**: confirm the Shopify token is never returned by any API response (`GET /shopify/status` returns only metadata) — verified; webhook HMAC rejection on a tampered payload — implemented via `timingSafeEqual`, worth testing with a curl request carrying a bad signature; confirm session cookie is httpOnly/secure — implemented.

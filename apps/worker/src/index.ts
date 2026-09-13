@@ -4,11 +4,17 @@ import dotenv from "dotenv";
 // root instead of relying on dotenv's cwd-relative default.
 dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 
+import cron from "node-cron";
 import { logger } from "@repo/core";
+import { runSyncReconciliation } from "./jobs/syncReconciliation";
 
-// Placeholder entry point for the always-on worker process.
-// Scheduled jobs (syncReconciliation, dailyMetrics, weeklyReport,
-// alertDetection) are registered here with node-cron starting at M2/M3 —
-// not needed yet for M1 (manual historical import only, via
-// runHistoricalImport.ts).
-logger.info("Worker process started (no scheduled jobs registered yet)");
+// Every 6 hours: backstop for webhooks Shopify failed to deliver. Wider
+// than this interval would risk permanent gaps; more frequent adds load
+// without much benefit since webhooks handle the real-time path.
+cron.schedule("0 */6 * * *", runSyncReconciliation);
+
+logger.info("Worker process started -- sync reconciliation scheduled every 6 hours");
+
+// Also run once immediately on startup, so a deploy doesn't wait up to 6
+// hours for the first reconciliation pass.
+runSyncReconciliation();

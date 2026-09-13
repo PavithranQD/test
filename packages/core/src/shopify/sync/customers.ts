@@ -1,7 +1,7 @@
 import { prisma } from "@repo/db";
 import { ShopifyAdminClient } from "../adminClient";
 
-interface ShopifyCustomer {
+export interface ShopifyCustomer {
   id: number;
   email: string | null;
   first_name: string | null;
