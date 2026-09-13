@@ -40,9 +40,10 @@ shopify-bi-platform/
             products.ts orders.ts customers.ts historicalImport.ts reconcile.ts
           webhooks/
             verifyHmac.ts register.ts handlers.ts
-        metrics/                   (M3)
-          revenue.ts orders.ts customers.ts products.ts inventory.ts discounts.ts
-          engine.ts                computeDailyMetrics(storeId, date)
+        metrics/                   done (M3)
+          revenueAndOrders.ts refundsAndCancellations.ts customers.ts products.ts
+          comparisons.ts dateUtils.ts
+          engine.ts                computeDailyMetrics(storeId, date), backfillDailyMetrics(...)
         rules/                     (M4)
           definitions.ts engine.ts   evaluateRules(storeId, date) -> Alert[]
         ai/                        (M6/M7)
@@ -64,7 +65,8 @@ shopify-bi-platform/
           auth/login/route.ts  auth/logout/route.ts
           shopify/connect/route.ts  shopify/status/route.ts
           shopify/webhooks/[topic]/route.ts   Node runtime, raw body for HMAC
-          metrics/*, insights, alerts, reports, chat/*                        (M3-M7)
+          metrics/revenue/route.ts  metrics/orders/route.ts   done (M3)
+          insights, alerts, reports, chat/*                        (M4-M7, not built yet)
     worker/                        plain Node process (deployed separately, e.g. Render Background Worker)
       src/
         index.ts                   node-cron: syncReconciliation every 6h (+ once on startup)
@@ -72,7 +74,8 @@ shopify-bi-platform/
         hashPassword.ts            CLI helper to generate ADMIN_PASSWORD_HASH
         jobs/
           syncReconciliation.ts    done (M2)
-          dailyMetrics.ts weeklyReport.ts alertDetection.ts   (M3-M4, not built yet)
+          dailyMetrics.ts          done (M3)
+          weeklyReport.ts alertDetection.ts   (M4/M6, not built yet)
 ```
 
 Both `apps/web` and `apps/worker` depend on `@repo/db` and `@repo/core`. Web API routes will read pre-computed tables (`DailyMetric`, `Alert`, `Report`) rather than recomputing on request once those exist — all heavy computation happens in the worker's cron jobs or incrementally in webhook handlers. This keeps Vercel function execution short and avoids serverless timeout issues.
@@ -84,7 +87,7 @@ Implemented. Core tables, adapted from the spec for single-store/custom-app real
 - **`User`** / **`Session`** — internal login for you, not Shopify merchants. No `merchants` table needed for one store.
 - **`RuleThreshold`** — per-store, will be seeded with defaults for the 5 spec rules at M4.
 - **`Product` / `ProductVariant` / `InventoryLevel`**, **`Customer`**, **`Order` / `OrderItem` / `Refund` / `DiscountUsage`** — raw synced data, money fields as `Decimal` (never float).
-- **`DailyMetric`** / **`ProductDailyMetric`** — Metrics Engine output (M3), currently empty.
+- **`DailyMetric`** / **`ProductDailyMetric`** — Metrics Engine output, populated since M3.
 - **`Alert`** — Rules Engine output (M4), currently empty.
 - **`Report`** — AI-generated periodic reports (M6), currently empty.
 - **`ChatSession` / `ChatMessage`** — chat history (M7), currently empty.
@@ -113,7 +116,7 @@ Flow: `Shopify → sync/webhooks → raw tables → Metrics Engine → Rules Eng
 
 1. **M1 — Scaffold + credentials + manual import — DONE.** Monorepo, schema + migration, `/settings` connect flow with token encryption/validation, `runHistoricalImport.ts` CLI (REST pagination, see deviation note above), login/session auth, Dashboard/Products/Inventory pages reading real synced data. Verified against the live Render deployment: store connected, 89 products / 10,874 customers / 35 orders synced successfully.
 2. **M2 — Webhooks + reconciliation — DONE.** `registerWebhooks()` called automatically at the end of `/api/shopify/connect` for `orders/create|updated|cancelled|paid`, `refunds/create`, `products/create|update`, `inventory_levels/update`, `customers/create|update`, `app/uninstalled`. Receiver at `apps/web/app/api/shopify/webhooks/[topic]/route.ts` (Node runtime, raw-body HMAC verification via `verifyShopifyWebhookHmac`, dispatch by the `X-Shopify-Topic` header rather than the URL segment, `WebhookEvent` payload-hash dedupe for Shopify's at-least-once retries). Handlers reuse the same `upsertOrder`/`upsertProduct`/`upsertCustomer`/`upsertInventoryLevel` functions the bulk sync uses, refactored out of `products.ts`/`orders.ts` for that purpose. `reconcile.ts` re-pulls anything updated in the last 24h via `updated_at_min` (catches edits to older orders/products that webhooks might have missed, not just new records) and runs every 6 hours via `node-cron` in `apps/worker`, plus once immediately on worker startup. *Demo*: create/edit a test order in Shopify Admin, confirm it lands in Postgres within seconds via the webhook; check `SyncJob` rows with `jobType: RECONCILIATION` to confirm the periodic backstop is running.
-3. **M3 — Metrics Engine**: all metrics submodules, `dailyMetrics.ts` with backfill mode, `GET /api/metrics/revenue|orders`. *Demo*: numbers match Shopify Admin's own analytics for a known date.
+3. **M3 — Metrics Engine — DONE.** `computeDailyMetrics(storeId, date)` in `packages/core/src/metrics/engine.ts` orchestrates `revenueAndOrders.ts` (grossRevenue/totalDiscounts/orderCount/unitsSold/aov, bucketed by `Order.processedAt`), `refundsAndCancellations.ts` (totalRefunds/refundedOrderCount/cancelledOrderCount, bucketed by their own event dates — a refund today on a week-old order counts as today's activity), `customers.ts` (new/returning/repeatPurchaseRate), and `products.ts` (per-product `ProductDailyMetric`: units/revenue/day-over-day growthPct/7-day velocity/daysOfCoverage from current `InventoryLevel`). `comparisons.ts` adds `getPeriodComparison(storeId, windowDays)` — rolling window (not calendar-aligned) day/week/month-over-month deltas, reused by `GET /api/metrics/revenue` and `/orders`, and will be reused again by the Rules Engine (M4) and Dashboard (M5). `backfillDailyMetrics` runs automatically at the end of `runHistoricalImport`, and incrementally for "today" after every processed webhook. Bucketing is UTC calendar day, not the store's local timezone — a documented simplification (see `dateUtils.ts`), and days-of-coverage for backfilled historical dates uses *today's* inventory snapshot since there's no daily inventory history table (also documented, matches the M1 approximation note). *Verified*: ran the backfill against the live production DB — 366 days processed, totals (35 orders, 37 units, gross ₹36,513.84 / net ₹34,018.54) match the known order count from M1, and 14 products show real `ProductDailyMetric` activity.
 4. **M4 — Rules Engine + Alerts**: seeded `RuleThreshold` defaults, rules engine, `alertDetection.ts` chained after metrics, `GET /api/alerts`. *Demo*: feed a synthetic revenue drop, see the correct `Alert` appear.
 5. **M5 — Dashboard + core UI**: fill in reports(empty)/insights with real data, no AI yet. *Demo*: fully navigable app on live store data.
 6. **M6 — AI weekly report**: Anthropic integration, `contextBuilder`, `reportGenerator`, `weeklyReport.ts` cron, Reports UI. *Demo*: trigger manually, view a generated report with all required sections.

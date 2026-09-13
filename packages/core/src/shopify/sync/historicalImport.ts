@@ -3,6 +3,7 @@ import { getAdminClientForStore } from "../connectStore";
 import { syncProducts } from "./products";
 import { syncCustomers } from "./customers";
 import { syncOrders } from "./orders";
+import { backfillDailyMetrics } from "../../metrics/engine";
 
 const DEFAULT_HISTORY_MONTHS = 12;
 
@@ -40,4 +41,9 @@ export async function runHistoricalImport(storeId: string, historyMonths = DEFAU
   const since = new Date();
   since.setMonth(since.getMonth() - historyMonths);
   await runTrackedJob(storeId, "orders", () => syncOrders(storeId, client, since.toISOString()));
+
+  // Populate DailyMetric/ProductDailyMetric history for the whole imported
+  // range so the dashboard has data immediately, rather than waiting for
+  // the nightly job to build it up one day at a time.
+  await runTrackedJob(storeId, "metrics_backfill", () => backfillDailyMetrics(storeId, since, new Date()));
 }

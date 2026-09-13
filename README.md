@@ -10,7 +10,7 @@ See `PLAN.md` for the full architecture/build-milestone plan.
 
 - [x] **M1 — Scaffold + credentials + manual import**
 - [x] **M2 — Webhooks + reconciliation**
-- [ ] M3 — Metrics Engine
+- [x] **M3 — Metrics Engine**
 - [ ] M4 — Rules Engine + Alerts
 - [ ] M5 — Dashboard + core UI
 - [ ] M6 — AI weekly report

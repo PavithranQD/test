@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@repo/db";
-import { getActiveStore, decryptSecret, verifyShopifyWebhookHmac, WEBHOOK_HANDLERS, logger } from "@repo/core";
+import { getActiveStore, decryptSecret, verifyShopifyWebhookHmac, WEBHOOK_HANDLERS, computeDailyMetrics, logger } from "@repo/core";
 
 // Must run on the Node.js runtime (not Edge) -- needs node:crypto for HMAC
 // verification and Prisma for the DB writes triggered by handlers.
@@ -55,6 +55,16 @@ export async function POST(request: NextRequest) {
       where: { id: webhookEvent.id },
       data: { status: "PROCESSED", processedAt: new Date() },
     });
+
+    // Keep "today" fresh in near-real-time rather than waiting for the
+    // nightly job -- cheap (single day, single store), so awaiting it here
+    // is simpler to reason about than a detached background task.
+    try {
+      await computeDailyMetrics(store.id, new Date());
+    } catch (metricsErr) {
+      logger.error(metricsErr, "Incremental metrics recompute failed");
+    }
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     logger.error({ err, topic }, "Webhook handler failed");
