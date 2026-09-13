@@ -12,9 +12,9 @@ See `PLAN.md` for the full architecture/build-milestone plan.
 - [x] **M2 — Webhooks + reconciliation**
 - [x] **M3 — Metrics Engine**
 - [x] **M4 — Rules Engine + Alerts**
-- [ ] M5 — Dashboard + core UI
-- [ ] M6 — AI weekly report
-- [ ] M7 — AI chat
+- [x] **M5 — Dashboard + core UI**
+- [ ] M6 — AI weekly report (needs `ANTHROPIC_API_KEY`)
+- [ ] M7 — AI chat (needs `ANTHROPIC_API_KEY`)
 - [ ] M8 — Hardening
 
 ## Setup (M1)
